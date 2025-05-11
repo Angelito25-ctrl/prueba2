@@ -1,0 +1,152 @@
+%%html
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Bus en Rutas con ETA Dinámica y Selección de Ruta</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+  <style>
+    #map { width: 100%; height: 500px; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/@turf/turf/turf.min.js"></script>
+  <script>
+    var map = L.map('map').setView([2.4446, -76.6060], 14);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '© OpenStreetMap'
+    }).addTo(map);
+
+    var routes = {
+      1: { coords: [ [2.4446,-76.6060], [2.4460,-76.6090], [2.4475,-76.6050], [2.4455,-76.6020], [2.4446,-76.6060] ], color: 'blue', interval: 1000, index: 0 },
+      2: { coords: [ [2.4415,-76.6078], [2.4428,-76.6035], [2.4450,-76.6010], [2.4470,-76.6030], [2.4415,-76.6078] ], color: 'orange', interval: 1200, index: 0 }
+    };
+
+    Object.keys(routes).forEach(function(id) {
+      var r = routes[id];
+      r.line = L.polyline(r.coords, { color: r.color, weight: 4 }).addTo(map).bindPopup('Ruta ' + id);
+      r.bus = L.marker(r.coords[0]).addTo(map);
+      setInterval(function() {
+        r.index = (r.index + 1) % r.coords.length;
+        r.bus.setLatLng(r.coords[r.index]);
+      }, r.interval);
+    });
+
+    function calcularDatosRuta(punto, lineaCoords) {
+      var pt = turf.point([punto[1], punto[0]]);
+      var line = turf.lineString(lineaCoords.map(c => [c[1], c[0]]));
+      var snap = turf.nearestPointOnLine(line, pt, { units: 'meters' });
+      var d = turf.pointToLineDistance(pt, line, { units: 'meters' });
+      return { distancia: d.toFixed(2), nearest: [ snap.geometry.coordinates[1], snap.geometry.coordinates[0] ] };
+    }
+
+    var userLocation = [2.4438, -76.6075];
+    var destinationLocation = [2.4470, -76.6045];
+    var userMarker = L.marker(userLocation).addTo(map);
+    var destMarker = L.circleMarker(destinationLocation, {
+      radius: 8, fillColor: '#000', color: '#000', weight: 2, opacity: 1, fillOpacity: 1
+    }).addTo(map);
+
+    var selectedRouteId = "1"; // Valor por defecto
+    var userLine = null, destLine = null, userInterval = null;
+
+    function generarContenidoPopupUser() {
+      return `
+        Tú estás aquí<br>
+        Selecciona ruta: <select id="routeSelect">
+          <option value="1" ${selectedRouteId === "1" ? "selected" : ""}>Ruta 1</option>
+          <option value="2" ${selectedRouteId === "2" ? "selected" : ""}>Ruta 2</option>
+        </select><br>
+        Distancia a ruta: <a href="#" id="toggle-path-user"><span id="distancia-user"></span> m</a><br>
+        ETA del bus: <strong id="eta-user"></strong>
+      `;
+    }
+
+    function generarContenidoPopupDestino() {
+      var r = routes[selectedRouteId];
+      var datos = calcularDatosRuta(destinationLocation, r.coords);
+      var idxDest = r.coords.findIndex(c => c[0] === datos.nearest[0] && c[1] === datos.nearest[1]);
+      var pasos = (idxDest - r.index + r.coords.length) % r.coords.length;
+      var eta = (pasos * r.interval / 1000).toFixed(1);
+      return `
+        Destino<br>
+        Distancia a Ruta ${selectedRouteId}: <a href="#" id="toggle-path-dest"><span id="distancia-dest">${datos.distancia}</span> m</a><br>
+        ETA del bus: <strong>${eta} s</strong>
+      `;
+    }
+
+    userMarker.bindPopup(generarContenidoPopupUser());
+    destMarker.bindPopup(generarContenidoPopupDestino());
+
+    map.on('popupopen', function(e) {
+      if (e.popup._source === userMarker) {
+        var select = document.getElementById('routeSelect');
+        var distanciaEl = document.getElementById('distancia-user');
+        var etaEl = document.getElementById('eta-user');
+
+        function actualizarPopup() {
+          var rutaId = select.value;
+          var r = routes[rutaId];
+          var datos = calcularDatosRuta(userLocation, r.coords);
+          var idxUser = r.coords.findIndex(c => c[0] === datos.nearest[0] && c[1] === datos.nearest[1]);
+          var pasos = (idxUser - r.index + r.coords.length) % r.coords.length;
+          distanciaEl.textContent = datos.distancia;
+          etaEl.textContent = (pasos * r.interval / 1000).toFixed(1) + ' s';
+
+          if (userLine) {
+            map.removeLayer(userLine);
+            userLine = L.polyline([userLocation, datos.nearest], { color:'red', weight:3, dashArray:'5,10' }).addTo(map);
+          }
+        }
+
+        select.onchange = function() {
+          selectedRouteId = select.value;
+          if (userLine) { map.removeLayer(userLine); userLine = null; }
+          if (destLine) { map.removeLayer(destLine); destLine = null; }
+          userMarker.setPopupContent(generarContenidoPopupUser());
+          destMarker.setPopupContent(generarContenidoPopupDestino());
+          actualizarPopup();
+        };
+
+        document.getElementById('toggle-path-user').onclick = function(evt) {
+          evt.preventDefault();
+          var r = routes[select.value];
+          var datos = calcularDatosRuta(userLocation, r.coords);
+          if (userLine) { map.removeLayer(userLine); userLine = null; }
+          else { userLine = L.polyline([userLocation, datos.nearest], { color:'red', weight:3, dashArray:'5,10' }).addTo(map); }
+        };
+
+        actualizarPopup();
+        userInterval = setInterval(actualizarPopup, 1000);
+      }
+
+      if (e.popup._source === destMarker) {
+        document.getElementById('toggle-path-dest').onclick = function(evt) {
+          evt.preventDefault();
+          var r = routes[selectedRouteId];
+          var datos = calcularDatosRuta(destinationLocation, r.coords);
+          if (destLine) { map.removeLayer(destLine); destLine = null; }
+          else { destLine = L.polyline([destinationLocation, datos.nearest], { color:'green', weight:3, dashArray:'5,5' }).addTo(map); }
+        };
+      }
+    });
+
+    map.on('popupclose', function(e) {
+      if (e.popup._source === userMarker && userInterval) {
+        clearInterval(userInterval);
+        userInterval = null;
+        var select = document.getElementById('routeSelect');
+        if (select) selectedRouteId = select.value;
+        userMarker.bindPopup(generarContenidoPopupUser());
+        destMarker.bindPopup(generarContenidoPopupDestino());
+      }
+    });
+
+    userMarker.openPopup();
+  </script>
+</body>
+</html>
