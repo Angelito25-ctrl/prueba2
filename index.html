@@ -1,151 +1,241 @@
+%%html
 <!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <title>Bus en Rutas con ETA Dinámica y Selección de Ruta</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+  <title>Movii</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <!-- Font-Awesome CSS -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" integrity="sha512-pap5m+YkE+rPYCq866oQG9Qz9LHQvQ0L+1KY3a+8RYUVb+QiW5CvpbGY0ydfQY08W+Y0Hm8U9jLF8q6O3XMSyw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
   <style>
-    #map { width: 100%; height: 500px; }
+    /* Oculta márgenes y forzar tamaño completo */
+    body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
+    /* Splash inicial */
+    #splash { display: flex; justify-content: center; align-items: center; background: #fff; width: 100%; height: 100%; position: absolute; top: 0; left: 0; z-index: 999; }
+    /* Contenedor del mapa */
+    #map-container { display: none; width: 100%; height: 100%; position: relative; }
+    /* Mapa Leaflet ocupa todo */
+    #map { width: 100%; height: 100%; }
+    /* Botones flotantes */
+    .btn-floating {
+      position: absolute;
+      background: white;
+      border: none;
+      border-radius: 50%;
+      padding: 10px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+      cursor: pointer;
+      z-index: 1000;
+      font-size: 18px;
+    }
+    /* Posición de cada botón */
+    #show-map-btn { top: 10px; right: 10px; }
+    #show-info-btn { top: 10px; left: 10px; display: none; }
   </style>
 </head>
 <body>
-  <div id="map"></div>
+  <!-- Pantalla inicial -->
+  <div id="splash">
+    <h1>Movii</h1>
+  </div>
 
+  <!-- Mapa y botón “Info” -->
+  <div id="map-container">
+    <div id="map"></div>
+    <button id="show-info-btn" class="btn-floating">
+      <i class="fa fa-info-circle"></i>
+    </button>
+  </div>
+
+  <!-- Botón para mostrar el mapa -->
+  <button id="show-map-btn" class="btn-floating">
+    <i class="fa fa-map"></i>
+  </button>
+
+  <!-- Leaflet JS y Turf.js -->
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
   <script src="https://unpkg.com/@turf/turf/turf.min.js"></script>
   <script>
-    var map = L.map('map').setView([2.4446, -76.6060], 14);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '© OpenStreetMap'
-    }).addTo(map);
+    // Elementos del DOM
+    const splash       = document.getElementById('splash');
+    const mapContainer = document.getElementById('map-container');
+    const showMapBtn   = document.getElementById('show-map-btn');
+    const showInfoBtn  = document.getElementById('show-info-btn');
 
-    var routes = {
-      1: { coords: [ [2.4446,-76.6060], [2.4460,-76.6090], [2.4475,-76.6050], [2.4455,-76.6020], [2.4446,-76.6060] ], color: 'blue', interval: 1000, index: 0 },
-      2: { coords: [ [2.4415,-76.6078], [2.4428,-76.6035], [2.4450,-76.6010], [2.4470,-76.6030], [2.4415,-76.6078] ], color: 'orange', interval: 1200, index: 0 }
-    };
+    // Estado global
+    let map, routes;
+    let selectedRouteId   = '1';
+    let userLocation      = null;
+    let destinationLocation = null;
+    let userMarker, destMarker, userLine, destLine;
+    let isChangingUser = false, isChangingDest = false;
 
-    Object.keys(routes).forEach(function(id) {
-      var r = routes[id];
-      r.line = L.polyline(r.coords, { color: r.color, weight: 4 }).addTo(map).bindPopup('Ruta ' + id);
-      r.bus = L.marker(r.coords[0]).addTo(map);
-      setInterval(function() {
-        r.index = (r.index + 1) % r.coords.length;
-        r.bus.setLatLng(r.coords[r.index]);
-      }, r.interval);
+    // Mostrar mapa
+    showMapBtn.addEventListener('click', () => {
+      splash.style.display = 'none';
+      showMapBtn.style.display = 'none';
+      mapContainer.style.display = 'block';
+      showInfoBtn.style.display = 'block';
+      if (!map) initMap();
     });
 
-    function calcularDatosRuta(punto, lineaCoords) {
-      var pt = turf.point([punto[1], punto[0]]);
-      var line = turf.lineString(lineaCoords.map(c => [c[1], c[0]]));
-      var snap = turf.nearestPointOnLine(line, pt, { units: 'meters' });
-      var d = turf.pointToLineDistance(pt, line, { units: 'meters' });
-      return { distancia: d.toFixed(2), nearest: [ snap.geometry.coordinates[1], snap.geometry.coordinates[0] ] };
-    }
+    // Volver a splash
+    showInfoBtn.addEventListener('click', () => {
+      mapContainer.style.display = 'none';
+      showInfoBtn.style.display = 'none';
+      splash.style.display = 'flex';
+      showMapBtn.style.display = 'block';
+    });
 
-    var userLocation = [2.4438, -76.6075];
-    var destinationLocation = [2.4470, -76.6045];
-    var userMarker = L.marker(userLocation).addTo(map);
-    var destMarker = L.circleMarker(destinationLocation, {
-      radius: 8, fillColor: '#000', color: '#000', weight: 2, opacity: 1, fillOpacity: 1
-    }).addTo(map);
+    // Inicializa mapa y lógica
+    function initMap() {
+      map = L.map('map').setView([2.4446, -76.6060], 14);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '© OpenStreetMap'
+      }).addTo(map);
 
-    var selectedRouteId = "1"; // Valor por defecto
-    var userLine = null, destLine = null, userInterval = null;
+      // Definir rutas
+      routes = {
+        1: { coords: [[2.4446,-76.6060],[2.4460,-76.6090],[2.4475,-76.6050],[2.4455,-76.6020],[2.4446,-76.6060]], color: 'blue',  interval: 1000, index: 0 },
+        2: { coords: [[2.4415,-76.6078],[2.4428,-76.6035],[2.4450,-76.6010],[2.4470,-76.6030],[2.4415,-76.6078]], color: 'orange', interval: 1200, index: 0 }
+      };
+      // Añadir polilíneas y marcadores que animan
+      Object.values(routes).forEach(r => {
+        r.line = L.polyline(r.coords, { color: r.color, weight: 4 }).addTo(map);
+        r.bus  = L.marker(r.coords[0]).addTo(map);
+        setInterval(() => {
+          r.index = (r.index + 1) % r.coords.length;
+          r.bus.setLatLng(r.coords[r.index]);
+        }, r.interval);
+      });
 
-    function generarContenidoPopupUser() {
-      return `
-        Tú estás aquí<br>
-        Selecciona ruta: <select id="routeSelect">
-          <option value="1" ${selectedRouteId === "1" ? "selected" : ""}>Ruta 1</option>
-          <option value="2" ${selectedRouteId === "2" ? "selected" : ""}>Ruta 2</option>
-        </select><br>
-        Distancia a ruta: <a href="#" id="toggle-path-user"><span id="distancia-user"></span> m</a><br>
-        ETA del bus: <strong id="eta-user"></strong>
-      `;
-    }
+      // Función Turf para distancia y snap
+      function calcularDatosRuta(punto, coords) {
+        const pt   = turf.point([punto[1], punto[0]]);
+        const line = turf.lineString(coords.map(c=>[c[1],c[0]]));
+        const snap = turf.nearestPointOnLine(line, pt, { units:'meters' });
+        const d    = turf.pointToLineDistance(pt, line, { units:'meters' });
+        return { distancia: d.toFixed(2), nearest: [snap.geometry.coordinates[1], snap.geometry.coordinates[0]] };
+      }
 
-    function generarContenidoPopupDestino() {
-      var r = routes[selectedRouteId];
-      var datos = calcularDatosRuta(destinationLocation, r.coords);
-      var idxDest = r.coords.findIndex(c => c[0] === datos.nearest[0] && c[1] === datos.nearest[1]);
-      var pasos = (idxDest - r.index + r.coords.length) % r.coords.length;
-      var eta = (pasos * r.interval / 1000).toFixed(1);
-      return `
-        Destino<br>
-        Distancia a Ruta ${selectedRouteId}: <a href="#" id="toggle-path-dest"><span id="distancia-dest">${datos.distancia}</span> m</a><br>
-        ETA del bus: <strong>${eta} s</strong>
-      `;
-    }
-
-    userMarker.bindPopup(generarContenidoPopupUser());
-    destMarker.bindPopup(generarContenidoPopupDestino());
-
-    map.on('popupopen', function(e) {
-      if (e.popup._source === userMarker) {
-        var select = document.getElementById('routeSelect');
-        var distanciaEl = document.getElementById('distancia-user');
-        var etaEl = document.getElementById('eta-user');
-
-        function actualizarPopup() {
-          var rutaId = select.value;
-          var r = routes[rutaId];
-          var datos = calcularDatosRuta(userLocation, r.coords);
-          var idxUser = r.coords.findIndex(c => c[0] === datos.nearest[0] && c[1] === datos.nearest[1]);
-          var pasos = (idxUser - r.index + r.coords.length) % r.coords.length;
-          distanciaEl.textContent = datos.distancia;
-          etaEl.textContent = (pasos * r.interval / 1000).toFixed(1) + ' s';
-
-          if (userLine) {
-            map.removeLayer(userLine);
-            userLine = L.polyline([userLocation, datos.nearest], { color:'red', weight:3, dashArray:'5,10' }).addTo(map);
-          }
+      // Control móvil
+      const MobileControl = L.Control.extend({
+        onAdd: () => {
+          const c = L.DomUtil.create('div', 'mobile-control');
+          c.innerHTML = `
+            <label>Tú estás aquí</label>
+            <select id="routeSelect">
+              <option value="1">Ruta 1</option>
+              <option value="2">Ruta 2</option>
+            </select>
+            <a id="toggle-path-user" class="disabled">Distancia: -</a>
+            <div>ETA bus (usuario): <strong>-</strong></div>
+            <a id="change-user-loc">Poner ubicación de usuario</a>
+            <hr>
+            <label>Destino</label>
+            <a id="toggle-path-dest" class="disabled">Distancia: -</a>
+            <div>ETA bus (destino): <strong>-</strong></div>
+            <a id="change-dest-loc">Poner ubicación de destino</a>
+          `;
+          L.DomEvent.disableClickPropagation(c);
+          return c;
         }
+      });
+      map.addControl(new MobileControl({ position:'topright' }));
 
-        select.onchange = function() {
-          selectedRouteId = select.value;
-          if (userLine) { map.removeLayer(userLine); userLine = null; }
-          if (destLine) { map.removeLayer(destLine); destLine = null; }
-          userMarker.setPopupContent(generarContenidoPopupUser());
-          destMarker.setPopupContent(generarContenidoPopupDestino());
-          actualizarPopup();
-        };
-
-        document.getElementById('toggle-path-user').onclick = function(evt) {
-          evt.preventDefault();
-          var r = routes[select.value];
-          var datos = calcularDatosRuta(userLocation, r.coords);
-          if (userLine) { map.removeLayer(userLine); userLine = null; }
-          else { userLine = L.polyline([userLocation, datos.nearest], { color:'red', weight:3, dashArray:'5,10' }).addTo(map); }
-        };
-
-        actualizarPopup();
-        userInterval = setInterval(actualizarPopup, 1000);
+      // Redibuja líneas punteadas
+      function redibujarLineas() {
+        const r = routes[selectedRouteId];
+        if (userLocation) {
+          if (userLine) map.removeLayer(userLine);
+          const d = calcularDatosRuta(userLocation, r.coords);
+          userLine = L.polyline([userLocation, d.nearest], { color:'red', weight:3, dashArray:'5,10' }).addTo(map);
+        }
+        if (destinationLocation) {
+          if (destLine) map.removeLayer(destLine);
+          const d = calcularDatosRuta(destinationLocation, r.coords);
+          destLine = L.polyline([destinationLocation, d.nearest], { color:'green', weight:3, dashArray:'5,5' }).addTo(map);
+        }
       }
 
-      if (e.popup._source === destMarker) {
-        document.getElementById('toggle-path-dest').onclick = function(evt) {
-          evt.preventDefault();
-          var r = routes[selectedRouteId];
-          var datos = calcularDatosRuta(destinationLocation, r.coords);
-          if (destLine) { map.removeLayer(destLine); destLine = null; }
-          else { destLine = L.polyline([destinationLocation, datos.nearest], { color:'green', weight:3, dashArray:'5,5' }).addTo(map); }
-        };
+      // Actualiza valores en el control
+      function actualizarUI() {
+        const r = routes[selectedRouteId];
+        // Usuario
+        if (userLocation) {
+          const d = calcularDatosRuta(userLocation, r.coords);
+          const idx = r.coords.findIndex(c=>c[0]===d.nearest[0]&&c[1]===d.nearest[1]);
+          const pasos = (idx - r.index + r.coords.length) % r.coords.length;
+          const tp = document.getElementById('toggle-path-user');
+          tp.classList.remove('disabled');
+          tp.textContent = `Distancia: ${d.distancia} m`;
+          tp.nextElementSibling.textContent = `${(pasos*r.interval/1000).toFixed(1)} s`;
+        }
+        // Destino
+        if (destinationLocation) {
+          const d = calcularDatosRuta(destinationLocation, r.coords);
+          const idx = r.coords.findIndex(c=>c[0]===d.nearest[0]&&c[1]===d.nearest[1]);
+          const pasos = (idx - r.index + r.coords.length) % r.coords.length;
+          const tp = document.getElementById('toggle-path-dest');
+          tp.classList.remove('disabled');
+          tp.textContent = `Distancia: ${d.distancia} m`;
+          tp.nextElementSibling.textContent = `${(pasos*r.interval/1000).toFixed(1)} s`;
+        }
       }
-    });
 
-    map.on('popupclose', function(e) {
-      if (e.popup._source === userMarker && userInterval) {
-        clearInterval(userInterval);
-        userInterval = null;
-        var select = document.getElementById('routeSelect');
-        if (select) selectedRouteId = select.value;
-        userMarker.bindPopup(generarContenidoPopupUser());
-        destMarker.bindPopup(generarContenidoPopupDestino());
-      }
-    });
+      // Event listeners del control
+      document.getElementById('routeSelect').addEventListener('change', e => {
+        selectedRouteId = e.target.value;
+        redibujarLineas(); actualizarUI();
+      });
+      document.getElementById('toggle-path-user').addEventListener('click', () => {
+        if (!userLocation) return;
+        const r = routes[selectedRouteId];
+        const d = calcularDatosRuta(userLocation, r.coords);
+        if (userLine) { map.removeLayer(userLine); userLine = null; }
+        else userLine = L.polyline([userLocation, d.nearest], { color:'red', weight:3, dashArray:'5,10' }).addTo(map);
+      });
+      document.getElementById('toggle-path-dest').addEventListener('click', () => {
+        if (!destinationLocation) return;
+        const r = routes[selectedRouteId];
+        const d = calcularDatosRuta(destinationLocation, r.coords);
+        if (destLine) { map.removeLayer(destLine); destLine = null; }
+        else destLine = L.polyline([destinationLocation, d.nearest], { color:'green', weight:3, dashArray:'5,5' }).addTo(map);
+      });
+      document.getElementById('change-user-loc').addEventListener('click', function() {
+        isChangingUser = true; isChangingDest = false;
+        this.textContent = 'Click en mapa para ubicar usuario';
+      });
+      document.getElementById('change-dest-loc').addEventListener('click', function() {
+        isChangingDest = true; isChangingUser = false;
+        this.textContent = 'Click en mapa para ubicar destino';
+      });
 
-    userMarker.openPopup();
+      // Click en mapa para seleccionar puntos
+      map.on('click', e => {
+        if (isChangingUser) {
+          userLocation = [e.latlng.lat, e.latlng.lng];
+          if (!userMarker) userMarker = L.marker(e.latlng).addTo(map);
+          else userMarker.setLatLng(e.latlng);
+          isChangingUser = false;
+          document.getElementById('change-user-loc').textContent = 'Cambiar ubicación';
+          redibujarLineas(); actualizarUI();
+        } else if (isChangingDest) {
+          destinationLocation = [e.latlng.lat, e.latlng.lng];
+          if (!destMarker) destMarker = L.circleMarker(e.latlng, { radius:8, fillColor:'#000', color:'#000', weight:2, fillOpacity:1 }).addTo(map);
+          else destMarker.setLatLng(e.latlng);
+          isChangingDest = false;
+          document.getElementById('change-dest-loc').textContent = 'Cambiar destino';
+          redibujarLineas(); actualizarUI();
+        }
+      });
+
+      // Refresca el panel cada segundo
+      setInterval(actualizarUI, 1000);
+    }
   </script>
 </body>
 </html>
